@@ -7,11 +7,11 @@
 - withfox ログイン済み（キーチェーン項目 `Claude Code-credentials-16317cc0`、main とは別）
   - 再ログイン手順: `BROWSER=<Chrome の WithFox プロファイルで開くスクリプト> ccx withfox auth login --email <メール>`
 - `/switch [name]`: 本物の claude で main → withfox の切替を確認済み（同一セッションが再開し、`claude auth status` が withfox を示した）
-- メニューバーアプリ ClaudeSwitcher を /Applications に導入
+- メニューバーアプリ ClaudeSwitcher を /Applications に導入。実機で withfox → main の切替を確認済み（同一セッションが再開し、`claude auth status` が main を示した）
 - ccx・switch.md を本リポジトリへ移し、元の場所はシンボリックリンク化
 
 ## 次の作業
-- メニューバーアプリからの切替（withfox → main）を実機で確認する
+- なし（運用しながら不具合があれば対応）
 
 ## 判明した注意点
 - claude.ai コネクタはアカウントごとに別。withfox では Gmail・Drive・Sheets が使え、main で使えていた Meetings・Claude Data は使えない。
