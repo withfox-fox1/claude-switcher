@@ -9,6 +9,7 @@
 - `/switch [name]`: 本物の claude で main → withfox の切替を確認済み（同一セッションが再開し、`claude auth status` が withfox を示した）
 - メニューバーアプリ ClaudeSwitcher を /Applications に導入。実機で withfox → main の切替を確認済み（同一セッションが再開し、`claude auth status` が main を示した）
 - ccx・switch.md を本リポジトリへ移し、元の場所はシンボリックリンク化
+- メニューバー: 前面タブで Claude が動いていなくても、最後に検出したアカウント名（未検出時は main）を表示し続けるよう変更（UserDefaults `lastKnownAccount`）
 
 ## 次の作業
 - なし（運用しながら不具合があれば対応）

@@ -28,6 +28,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let menu = NSMenu()
     private var current = ""
+    /// 最後に前面タブで検出したアカウント（未検出なら `claude` = `ccx main` に合わせて main）
+    private let lastKnownKey = "lastKnownAccount"
+    private lazy var lastKnown = UserDefaults.standard.string(forKey: lastKnownKey) ?? "main"
     private var accounts: [(name: String, email: String)] = []
     private var timer: Timer?
 
@@ -57,7 +60,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             DispatchQueue.main.async {
                 self.current = cur.status == 0 ? cur.output : ""
                 self.accounts = parsed.map { (name: $0.0, email: $0.1) }
-                self.statusItem.button?.title = self.current.isEmpty ? "" : " " + self.displayName(self.current)
+                if !self.current.isEmpty && self.current != self.lastKnown {
+                    self.lastKnown = self.current
+                    UserDefaults.standard.set(self.current, forKey: self.lastKnownKey)
+                }
+                // 前面タブで Claude が動いていなくても、最後に検出したアカウント名を表示し続ける
+                self.statusItem.button?.title = " " + self.displayName(self.current.isEmpty ? self.lastKnown : self.current)
                 completion?()
             }
         }
@@ -74,7 +82,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.removeAllItems()
         let header: String
         if current.isEmpty {
-            header = "前面の Terminal タブで Claude が動いていません"
+            header = "前面の Terminal タブで Claude が動いていません（最後に使用: \(displayName(lastKnown))）"
         } else {
             let email = accounts.first { $0.name == current }?.email ?? ""
             header = "前面のタブ: \(displayName(current))（\(email)）"
