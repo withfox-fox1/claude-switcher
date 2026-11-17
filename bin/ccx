@@ -1,0 +1,252 @@
+#!/bin/zsh
+# ccx - Claude Code のアカウント切り替えランチャー
+#
+#   ccx                     アカウント選択メニューを表示して起動
+#   ccx <name> [args...]    指定アカウントで claude を起動（args は claude にそのまま渡す）
+#   ccx <name> -c           同じフォルダの直近の会話を、指定アカウントで続きから再開
+#   ccx list                登録済みアカウントとログイン中のメールを表示
+#   ccx add <name>          アカウントを追加（初回起動時に /login する）
+#   /switch [name]          （Claude Code 内）別アカウントに切り替えて同じ会話を再開
+#   ccx tab-switch [name]   前面の Terminal タブの Claude を切り替える（メニューバーから使用）
+#
+# 仕組み:
+#   main      = ~/.claude（従来どおり。CLAUDE_CONFIG_DIR を設定しない）
+#   それ以外  = ~/.claude-accounts/<name> を CLAUDE_CONFIG_DIR として使う
+#   ログイン情報（.claude.json とキーチェーン）だけをアカウントごとに分け、
+#   CLAUDE.md・設定・skills・plugins・会話履歴・memory は ~/.claude へのシンボリックリンクで共有する。
+
+set -u
+
+MAIN_DIR="$HOME/.claude"
+ACCOUNTS_DIR="$HOME/.claude-accounts"
+
+# 全アカウントで共有する項目（~/.claude 内に存在するものだけリンクする）
+SHARED_ITEMS=(
+  CLAUDE.md settings.json settings.local.json keybindings.json
+  skills plugins agents commands output-styles
+  projects history.jsonl file-history todos plans
+)
+
+die() { print -u2 "ccx: $*"; exit 1; }
+
+normalize() { print -r -- "${1:l}"; }
+
+valid_name() { [[ "$1" =~ '^[a-z0-9][a-z0-9_-]*$' ]]; }
+
+config_dir_of() {
+  if [[ "$1" == main ]]; then print -r -- "$MAIN_DIR"; else print -r -- "$ACCOUNTS_DIR/$1"; fi
+}
+
+account_names() {
+  print main
+  [[ -d "$ACCOUNTS_DIR" ]] || return 0
+  local d
+  for d in "$ACCOUNTS_DIR"/*(N/); do print -r -- "${d:t}"; done
+}
+
+email_of() {
+  local f
+  if [[ "$1" == main ]]; then f="$HOME/.claude.json"; else f="$(config_dir_of "$1")/.claude.json"; fi
+  [[ -f "$f" ]] || { print "（未ログイン）"; return; }
+  /usr/bin/python3 - "$f" <<'PY' 2>/dev/null || print "（読み取り不可）"
+import json, sys
+a = json.load(open(sys.argv[1])).get("oauthAccount") or {}
+print(a.get("emailAddress") or "（未ログイン）")
+PY
+}
+
+# 共有項目のシンボリックリンクを張る（何度実行しても安全）
+link_shared() {
+  local dir="$1" item src dst
+  mkdir -p "$dir"
+  for item in $SHARED_ITEMS; do
+    src="$MAIN_DIR/$item"
+    dst="$dir/$item"
+    [[ -e "$src" ]] || continue
+    if [[ -L "$dst" ]]; then
+      continue
+    elif [[ -e "$dst" ]]; then
+      print -u2 "ccx: 注意: $dst が実体ファイルのため共有されていません（中身を確認のうえ削除すると次回リンクされます）"
+    else
+      ln -s "$src" "$dst"
+    fi
+  done
+}
+
+cmd_list() {
+  local n
+  for n in $(account_names); do
+    printf '  %-12s %s\n' "$n" "$(email_of "$n")"
+  done
+}
+
+cmd_add() {
+  local name
+  name="$(normalize "${1:-}")"
+  [[ -n "$name" ]] || die "使い方: ccx add <name>"
+  valid_name "$name" || die "名前は英小文字・数字・-・_ のみ使えます: $1"
+  [[ "$name" == (main|list|ls|add|switch|tab-switch|current|help|_*) ]] && die "その名前は予約されています: $name"
+  local dir; dir="$(config_dir_of "$name")"
+  [[ -d "$dir" ]] && die "既に存在します: $name（$dir）"
+  link_shared "$dir"
+  print "アカウント「$name」を追加しました: $dir"
+  print "次に 'ccx $name' で起動し、/login で該当アカウントにログインしてください。"
+}
+
+SWITCH_DIR="$ACCOUNTS_DIR/.switch"
+
+# claude を起動し、/switch で終了した場合は別アカウントで同じ会話を再開する
+launch() {
+  local name="$1"; shift
+  local dir rc flag target sid
+  while true; do
+    if [[ "$name" == main ]]; then
+      unset CLAUDE_CONFIG_DIR
+    else
+      dir="$(config_dir_of "$name")"
+      [[ -d "$dir" ]] || die "アカウント「$name」はありません。'ccx add $name' で追加できます。"
+      link_shared "$dir"
+      export CLAUDE_CONFIG_DIR="$dir"
+    fi
+    export CCX_ACCOUNT="$name" CCX_WRAPPER="$$"
+    print -u2 "▶ Claude Code: $name / $(email_of "$name")"
+    claude "$@"; rc=$?
+    flag="$SWITCH_DIR/$$"
+    [[ -f "$flag" ]] || exit $rc
+    read -r target sid < "$flag"; rm -f "$flag"
+    [[ -n "$target" && -n "$sid" ]] || exit $rc
+    print -u2 "↻ アカウントを $target に切り替えて会話を再開します…"
+    name="$target"
+    set -- --resume "$sid"
+  done
+}
+
+# 実行中の claude（pid）のセッション情報を出力する: 1行目=アカウント 2行目=セッションID 3行目=作業フォルダ
+session_info() {
+  local pid="$1" n f
+  for n in $(account_names); do
+    f="$(config_dir_of "$n")/sessions/$pid.json"
+    [[ -f "$f" ]] || continue
+    print -r -- "$n"
+    /usr/bin/python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print(d["sessionId"]);print(d["cwd"])' "$f" || return 1
+    return 0
+  done
+  return 1
+}
+
+# Terminal で前面に出ているタブの claude の pid を出力する
+front_tab_claude_pid() {
+  local tty
+  tty="$(/usr/bin/osascript -e 'tell application "Terminal" to get tty of selected tab of front window' 2>/dev/null)" \
+    || die "Terminal のウインドウが見つかりません"
+  /bin/ps -t "${tty#/dev/}" -o pid=,comm= | /usr/bin/awk '$2=="claude"{print $1}' | /usr/bin/tail -1
+}
+
+next_account() {
+  local -a names; names=($(account_names))
+  local idx=${names[(i)$1]}
+  print -r -- "${names[$(( idx % ${#names} + 1 ))]}"
+}
+
+# 実行中の claude を target アカウントで同じ会話のまま開き直す
+switch_claude() {
+  local pid="$1" target="${2:-}"
+  local -a info names; names=($(account_names))
+  info=("${(@f)$(session_info "$pid")}") || die "Claude のセッション情報が見つかりません（pid $pid）"
+  local current="${info[1]}" sid="${info[2]}" cwd="${info[3]}"
+  [[ -n "$target" ]] && target="$(normalize "$target")" || target="$(next_account "$current")"
+  (( ${names[(I)$target]} )) || die "アカウント「$target」はありません。登録済み: ${(j:, :)names}"
+  [[ "$target" != "$current" ]] || die "既に $current で起動しています"
+
+  local ppid tty
+  ppid="$(/bin/ps -o ppid= -p "$pid" | tr -d ' ')"
+  tty="$(/bin/ps -o tty= -p "$pid" | tr -d ' ')"
+  if /bin/ps -o args= -p "$ppid" | grep -q '/ccx '; then
+    # ccx 経由で起動されている: ccx が終了後に自動で開き直す
+    mkdir -p "$SWITCH_DIR"
+    print -r -- "$target $sid" > "$SWITCH_DIR/$ppid"
+    kill -TERM "$pid"
+  else
+    # 直接起動されている: 終了を待ってから同じタブで ccx を実行する（呼び出し元から切り離して実行）
+    local cmd="cd ${(q)cwd} && ccx $target --resume $sid"
+    /usr/bin/python3 -c 'import os,sys
+if os.fork(): sys.exit(0)
+os.setsid()
+fd=os.open(os.devnull,os.O_RDWR)
+[os.dup2(fd,i) for i in (0,1,2)]
+os.execv(sys.argv[1],sys.argv[1:])' "$0" _reopen "$pid" "/dev/$tty" "$cmd"
+    kill -TERM "$pid"
+  fi
+  print "$current → $target に切り替えます"
+}
+
+# 内部用: claude の終了を待ち、tty が一致する Terminal タブでコマンドを実行する
+cmd_reopen() {
+  local pid="$1" tty="$2" cmd="$3" i
+  for i in {1..50}; do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
+  sleep 0.3
+  /usr/bin/osascript - "$tty" "$cmd" <<'APPLESCRIPT'
+on run argv
+  set theTty to item 1 of argv
+  set theCmd to item 2 of argv
+  tell application "Terminal"
+    repeat with w in windows
+      repeat with t in tabs of w
+        if tty of t is theTty then
+          do script theCmd in t
+          return
+        end if
+      end repeat
+    end repeat
+  end tell
+end run
+APPLESCRIPT
+}
+
+# /switch（Claude Code 内）から呼ばれる
+cmd_switch() {
+  [[ -n "${CLAUDE_PID:-}" ]] || die "Claude Code の中から /switch で実行してください"
+  switch_claude "$CLAUDE_PID" "${1:-}"
+}
+
+# メニューバー等から呼ばれる: 前面の Terminal タブの claude を切り替える
+cmd_tab_switch() {
+  local pid; pid="$(front_tab_claude_pid)"
+  [[ -n "$pid" ]] || die "前面の Terminal タブで Claude が動いていません"
+  switch_claude "$pid" "${1:-}"
+}
+
+# 前面の Terminal タブの claude のアカウント名（なければ空）
+cmd_current() {
+  local pid; pid="$(front_tab_claude_pid)"
+  [[ -n "$pid" ]] || return 0
+  local -a info; info=("${(@f)$(session_info "$pid")}")
+  print -r -- "${info[1]}"
+}
+
+cmd_menu() {
+  local -a names
+  names=($(account_names))
+  print "アカウントを選択してください:"
+  local i
+  for i in {1..${#names}}; do
+    printf '  %d) %-12s %s\n' "$i" "${names[$i]}" "$(email_of "${names[$i]}")"
+  done
+  local choice
+  read "choice?番号: " || exit 1
+  [[ "$choice" =~ '^[0-9]+$' ]] && (( choice >= 1 && choice <= ${#names} )) || die "無効な番号です: $choice"
+  launch "${names[$choice]}" "$@"
+}
+
+case "${1:-}" in
+  "")            cmd_menu ;;
+  -h|--help|help) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//' ;;
+  -*)            cmd_menu "$@" ;;
+  list|ls)       [[ "${2:-}" == --tsv ]] && { for n in $(account_names); do printf '%s\t%s\n' "$n" "$(email_of "$n")"; done; } || cmd_list ;;
+  add)           shift; cmd_add "${1:-}" ;;
+  switch)        shift; cmd_switch "${1:-}" ;;
+  tab-switch)    shift; cmd_tab_switch "${1:-}" ;;
+  current)       cmd_current ;;
+  _reopen)       shift; cmd_reopen "$@" ;;
+  *)             name="$(normalize "$1")"; shift; launch "$name" "$@" ;;
+esac
