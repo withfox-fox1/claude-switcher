@@ -64,10 +64,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// メニューバー表示名（ccx の内部名は小文字。表記を変えたいものだけここで指定）
-    private let displayNames: [String: String] = ["withfox": "WithFox"]
+    private let displayNames: [String: String] = ["main": "ALBONA", "withfox": "WithFox"]
 
     private func displayName(_ name: String) -> String {
-        if name == "main" { return "main" }
         return displayNames[name] ?? name.uppercased()
     }
 
