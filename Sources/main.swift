@@ -72,7 +72,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// メニューバー表示名（ccx の内部名は小文字。表記を変えたいものだけここで指定）
-    private let displayNames: [String: String] = ["main": "ALBONA", "withfox": "WithFox"]
+    /// Mac ごとに main のアカウントが異なる場合は UserDefaults で上書きする:
+    ///   defaults write jp.co.withfox.ClaudeSwitcher displayNames -dict main WithFox
+    private lazy var displayNames: [String: String] = {
+        var names = ["main": "ALBONA", "withfox": "WithFox", "albona": "ALBONA"]
+        if let overrides = UserDefaults.standard.dictionary(forKey: "displayNames") as? [String: String] {
+            names.merge(overrides) { _, new in new }
+        }
+        return names
+    }()
 
     private func displayName(_ name: String) -> String {
         return displayNames[name] ?? name.uppercased()
